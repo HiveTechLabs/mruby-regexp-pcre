@@ -15,6 +15,7 @@
 
 struct mrb_regexp_pcre {
   pcre *re;
+  pcre_extra *extra;
 };
 
 struct mrb_matchdata {
@@ -30,6 +31,9 @@ mrb_regexp_free(mrb_state *mrb, void *ptr)
   if (mrb_re != NULL) {
     if (mrb_re->re != NULL) {
       pcre_free(mrb_re->re);
+    }
+    if (mrb_re->extra != NULL) {
+      pcre_free_study(mrb_re->extra);
     }
     mrb_free(mrb, mrb_re);
   }
@@ -121,6 +125,10 @@ regexp_pcre_initialize(mrb_state *mrb, mrb_value self)
   if (reg->re == NULL) {
     mrb_raisef(mrb, E_ARGUMENT_ERROR, "invalid regular expression");
   }
+  reg->extra = pcre_study(reg->re, PCRE_STUDY_JIT_COMPILE, &errstr);
+  if (errstr != NULL) {
+    mrb_raisef(mrb, E_ARGUMENT_ERROR, "failed to study regexp: %s", errstr);
+  }
   mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "@source"), source);
   mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "@options"), mrb_fixnum_value(mrb_pcre_to_mruby_options(coptions)));
 
@@ -134,7 +142,7 @@ regexp_pcre_initialize(mrb_state *mrb, mrb_value self)
       mrb_funcall(mrb, self, "name_push", 2, mrb_str_new(mrb, (const char *)(tabptr + 2), strlen((const char *)tabptr + 2)), mrb_fixnum_value(n));
       tabptr += name_entry_size;
     }
-  } 
+  }
 
   return self;
 }
@@ -150,12 +158,19 @@ regexp_pcre_match(mrb_state *mrb, mrb_value self)
   mrb_value md, str;
   int i;
   mrb_int pos;
-  pcre_extra extra;
+  pcre_extra extra_tmp = { 0 };
+  pcre_extra* extra_ptr;
   struct mrb_regexp_pcre *reg;
 
   reg = (struct mrb_regexp_pcre *)mrb_get_datatype(mrb, self, &mrb_regexp_type);
   if (!reg)
     return mrb_nil_value();
+
+  if (reg->extra) {
+    extra_ptr = reg->extra;
+  } else {
+    extra_ptr = &extra_tmp;
+  }
 
   pos = 0;
   mrb_get_args(mrb, "S|i", &str, &pos);
@@ -170,9 +185,9 @@ regexp_pcre_match(mrb_state *mrb, mrb_value self)
   matchlen = ccount + 1;
   match = mrb_malloc(mrb, sizeof(int) * matchlen * 3);
 
-  extra.flags = PCRE_EXTRA_MATCH_LIMIT_RECURSION;
-  extra.match_limit_recursion = 1000;
-  rc = pcre_exec(reg->re, &extra, RSTRING_PTR(str), RSTRING_LEN(str), pos, 0, match, matchlen * 3);
+  extra_ptr->flags |= PCRE_EXTRA_MATCH_LIMIT_RECURSION;
+  extra_ptr->match_limit_recursion = 1000;
+  rc = pcre_exec(reg->re, extra_ptr, RSTRING_PTR(str), RSTRING_LEN(str), pos, 0, match, matchlen * 3);
   if (rc < 0) {
     mrb_free(mrb, match);
     return mrb_nil_value();
